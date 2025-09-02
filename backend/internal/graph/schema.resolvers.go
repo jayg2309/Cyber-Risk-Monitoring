@@ -1,0 +1,499 @@
+package graph
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strconv"
+	"time"
+
+	"cyber-risk-monitor/internal/auth"
+	"cyber-risk-monitor/internal/db"
+	"cyber-risk-monitor/internal/graph/model"
+)
+
+// Register is the resolver for the register field.
+func (r *mutationResolver) Register(ctx context.Context, input model.RegisterInput) (*model.AuthPayload, error) {
+	// Hash the password
+	hashedPassword, err := auth.HashPassword(input.Password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Insert user into database
+	var user db.User
+	query := `
+		INSERT INTO users (email, password_hash, role, created_at, updated_at)
+		VALUES ($1, $2, 'user', NOW(), NOW())
+		RETURNING id, email, role, created_at, updated_at`
+	
+	err = r.DB.QueryRow(query, input.Email, hashedPassword).Scan(
+		&user.ID, &user.Email, &user.Role, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	// Generate JWT token
+	token, err := auth.GenerateToken(user.ID, user.Email, r.Config.JWTSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate token: %w", err)
+	}
+
+	return &model.AuthPayload{
+		Token: token,
+		User: &model.User{
+			ID:        strconv.Itoa(user.ID),
+			Email:     user.Email,
+			Role:      user.Role,
+			CreatedAt: user.CreatedAt.Format(time.RFC3339),
+		},
+	}, nil
+}
+
+// Login is the resolver for the login field.
+func (r *mutationResolver) Login(ctx context.Context, input model.LoginInput) (*model.AuthPayload, error) {
+	var user db.User
+	query := `SELECT id, email, password_hash, role, created_at FROM users WHERE email = $1`
+	
+	err := r.DB.QueryRow(query, input.Email).Scan(
+		&user.ID, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("invalid email or password")
+		}
+		return nil, fmt.Errorf("failed to find user: %w", err)
+	}
+
+	// Check password
+	if !auth.CheckPasswordHash(input.Password, user.PasswordHash) {
+		return nil, fmt.Errorf("invalid email or password")
+	}
+
+	// Generate JWT token
+	token, err := auth.GenerateToken(user.ID, user.Email, r.Config.JWTSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate token: %w", err)
+	}
+
+	return &model.AuthPayload{
+		Token: token,
+		User: &model.User{
+			ID:        strconv.Itoa(user.ID),
+			Email:     user.Email,
+			Role:      user.Role,
+			CreatedAt: user.CreatedAt.Format(time.RFC3339),
+		},
+	}, nil
+}
+
+// CreateAsset is the resolver for the createAsset field.
+func (r *mutationResolver) CreateAsset(ctx context.Context, input model.CreateAssetInput) (*model.Asset, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var asset db.Asset
+	query := `
+		INSERT INTO assets (user_id, name, target, asset_type, created_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		RETURNING id, user_id, name, target, asset_type, created_at, last_scanned_at`
+	
+	err = r.DB.QueryRow(query, user.UserID, input.Name, input.Target, input.AssetType).Scan(
+		&asset.ID, &asset.UserID, &asset.Name, &asset.Target, &asset.AssetType, 
+		&asset.CreatedAt, &asset.LastScannedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create asset: %w", err)
+	}
+
+	var lastScannedAt *string
+	if asset.LastScannedAt != nil {
+		formatted := asset.LastScannedAt.Format(time.RFC3339)
+		lastScannedAt = &formatted
+	}
+
+	return &model.Asset{
+		ID:            strconv.Itoa(asset.ID),
+		Name:          asset.Name,
+		Target:        asset.Target,
+		AssetType:     asset.AssetType,
+		CreatedAt:     asset.CreatedAt.Format(time.RFC3339),
+		LastScannedAt: lastScannedAt,
+	}, nil
+}
+
+// DeleteAsset is the resolver for the deleteAsset field.
+func (r *mutationResolver) DeleteAsset(ctx context.Context, id string) (bool, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	assetID, err := strconv.Atoi(id)
+	if err != nil {
+		return false, fmt.Errorf("invalid asset ID")
+	}
+
+	query := `DELETE FROM assets WHERE id = $1 AND user_id = $2`
+	result, err := r.DB.Exec(query, assetID, user.UserID)
+	if err != nil {
+		return false, fmt.Errorf("failed to delete asset: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	return rowsAffected > 0, nil
+}
+
+// StartScan is the resolver for the startScan field.
+func (r *mutationResolver) StartScan(ctx context.Context, assetID string) (*model.Scan, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify asset belongs to user
+	assetIDInt, err := strconv.Atoi(assetID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid asset ID")
+	}
+
+	var asset db.Asset
+	query := `SELECT id, name, target FROM assets WHERE id = $1 AND user_id = $2`
+	err = r.DB.QueryRow(query, assetIDInt, user.UserID).Scan(&asset.ID, &asset.Name, &asset.Target)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("asset not found")
+		}
+		return nil, fmt.Errorf("failed to find asset: %w", err)
+	}
+
+	// Create scan record
+	var scan db.Scan
+	insertQuery := `
+		INSERT INTO scans (asset_id, status, started_at)
+		VALUES ($1, 'running', NOW())
+		RETURNING id, asset_id, status, started_at, completed_at, error_message`
+	
+	err = r.DB.QueryRow(insertQuery, assetIDInt).Scan(
+		&scan.ID, &scan.AssetID, &scan.Status, &scan.StartedAt, &scan.CompletedAt, &scan.ErrorMessage,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create scan: %w", err)
+	}
+
+	// TODO: Implement actual scanning logic here
+	// For now, just return the scan record
+
+	var completedAt *string
+	if scan.CompletedAt != nil {
+		formatted := scan.CompletedAt.Format(time.RFC3339)
+		completedAt = &formatted
+	}
+
+	return &model.Scan{
+		ID:           strconv.Itoa(scan.ID),
+		Status:       scan.Status,
+		StartedAt:    scan.StartedAt.Format(time.RFC3339),
+		CompletedAt:  completedAt,
+		ErrorMessage: scan.ErrorMessage,
+	}, nil
+}
+
+// Me is the resolver for the me field.
+func (r *queryResolver) Me(ctx context.Context) (*model.User, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var dbUser db.User
+	query := `SELECT id, email, role, created_at FROM users WHERE id = $1`
+	err = r.DB.QueryRow(query, user.UserID).Scan(
+		&dbUser.ID, &dbUser.Email, &dbUser.Role, &dbUser.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find user: %w", err)
+	}
+
+	return &model.User{
+		ID:        strconv.Itoa(dbUser.ID),
+		Email:     dbUser.Email,
+		Role:      dbUser.Role,
+		CreatedAt: dbUser.CreatedAt.Format(time.RFC3339),
+	}, nil
+}
+
+// Assets is the resolver for the assets field.
+func (r *queryResolver) Assets(ctx context.Context) ([]*model.Asset, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `SELECT id, name, target, asset_type, created_at, last_scanned_at FROM assets WHERE user_id = $1 ORDER BY created_at DESC`
+	rows, err := r.DB.Query(query, user.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query assets: %w", err)
+	}
+	defer rows.Close()
+
+	var assets []*model.Asset
+	for rows.Next() {
+		var asset db.Asset
+		err := rows.Scan(&asset.ID, &asset.Name, &asset.Target, &asset.AssetType, &asset.CreatedAt, &asset.LastScannedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan asset: %w", err)
+		}
+
+		var lastScannedAt *string
+		if asset.LastScannedAt != nil {
+			formatted := asset.LastScannedAt.Format(time.RFC3339)
+			lastScannedAt = &formatted
+		}
+
+		assets = append(assets, &model.Asset{
+			ID:            strconv.Itoa(asset.ID),
+			Name:          asset.Name,
+			Target:        asset.Target,
+			AssetType:     asset.AssetType,
+			CreatedAt:     asset.CreatedAt.Format(time.RFC3339),
+			LastScannedAt: lastScannedAt,
+		})
+	}
+
+	return assets, nil
+}
+
+// Asset is the resolver for the asset field.
+func (r *queryResolver) Asset(ctx context.Context, id string) (*model.Asset, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	assetID, err := strconv.Atoi(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid asset ID")
+	}
+
+	var asset db.Asset
+	query := `SELECT id, name, target, asset_type, created_at, last_scanned_at FROM assets WHERE id = $1 AND user_id = $2`
+	err = r.DB.QueryRow(query, assetID, user.UserID).Scan(
+		&asset.ID, &asset.Name, &asset.Target, &asset.AssetType, &asset.CreatedAt, &asset.LastScannedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("asset not found")
+		}
+		return nil, fmt.Errorf("failed to find asset: %w", err)
+	}
+
+	var lastScannedAt *string
+	if asset.LastScannedAt != nil {
+		formatted := asset.LastScannedAt.Format(time.RFC3339)
+		lastScannedAt = &formatted
+	}
+
+	return &model.Asset{
+		ID:            strconv.Itoa(asset.ID),
+		Name:          asset.Name,
+		Target:        asset.Target,
+		AssetType:     asset.AssetType,
+		CreatedAt:     asset.CreatedAt.Format(time.RFC3339),
+		LastScannedAt: lastScannedAt,
+	}, nil
+}
+
+// Scans is the resolver for the scans field.
+func (r *queryResolver) Scans(ctx context.Context, assetID *string) ([]*model.Scan, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var query string
+	var args []interface{}
+
+	if assetID != nil {
+		// Verify asset belongs to user
+		assetIDInt, err := strconv.Atoi(*assetID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid asset ID")
+		}
+
+		query = `
+			SELECT s.id, s.asset_id, s.status, s.started_at, s.completed_at, s.error_message
+			FROM scans s
+			JOIN assets a ON s.asset_id = a.id
+			WHERE s.asset_id = $1 AND a.user_id = $2
+			ORDER BY s.started_at DESC`
+		args = []interface{}{assetIDInt, user.UserID}
+	} else {
+		query = `
+			SELECT s.id, s.asset_id, s.status, s.started_at, s.completed_at, s.error_message
+			FROM scans s
+			JOIN assets a ON s.asset_id = a.id
+			WHERE a.user_id = $1
+			ORDER BY s.started_at DESC`
+		args = []interface{}{user.UserID}
+	}
+
+	rows, err := r.DB.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query scans: %w", err)
+	}
+	defer rows.Close()
+
+	var scans []*model.Scan
+	for rows.Next() {
+		var scan db.Scan
+		err := rows.Scan(&scan.ID, &scan.AssetID, &scan.Status, &scan.StartedAt, &scan.CompletedAt, &scan.ErrorMessage)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		var completedAt *string
+		if scan.CompletedAt != nil {
+			formatted := scan.CompletedAt.Format(time.RFC3339)
+			completedAt = &formatted
+		}
+
+		scans = append(scans, &model.Scan{
+			ID:           strconv.Itoa(scan.ID),
+			Status:       scan.Status,
+			StartedAt:    scan.StartedAt.Format(time.RFC3339),
+			CompletedAt:  completedAt,
+			ErrorMessage: scan.ErrorMessage,
+		})
+	}
+
+	return scans, nil
+}
+
+// Scan is the resolver for the scan field.
+func (r *queryResolver) Scan(ctx context.Context, id string) (*model.Scan, error) {
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	scanID, err := strconv.Atoi(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid scan ID")
+	}
+
+	var scan db.Scan
+	query := `
+		SELECT s.id, s.asset_id, s.status, s.started_at, s.completed_at, s.error_message
+		FROM scans s
+		JOIN assets a ON s.asset_id = a.id
+		WHERE s.id = $1 AND a.user_id = $2`
+	
+	err = r.DB.QueryRow(query, scanID, user.UserID).Scan(
+		&scan.ID, &scan.AssetID, &scan.Status, &scan.StartedAt, &scan.CompletedAt, &scan.ErrorMessage,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("scan not found")
+		}
+		return nil, fmt.Errorf("failed to find scan: %w", err)
+	}
+
+	var completedAt *string
+	if scan.CompletedAt != nil {
+		formatted := scan.CompletedAt.Format(time.RFC3339)
+		completedAt = &formatted
+	}
+
+	return &model.Scan{
+		ID:           strconv.Itoa(scan.ID),
+		Status:       scan.Status,
+		StartedAt:    scan.StartedAt.Format(time.RFC3339),
+		CompletedAt:  completedAt,
+		ErrorMessage: scan.ErrorMessage,
+	}, nil
+}
+
+// Scans is the resolver for the scans field.
+func (r *assetResolver) Scans(ctx context.Context, obj *model.Asset) ([]*model.Scan, error) {
+	assetID := obj.ID
+	return r.Query().Scans(ctx, &assetID)
+}
+
+// Asset is the resolver for the asset field.
+func (r *scanResolver) Asset(ctx context.Context, obj *model.Scan) (*model.Asset, error) {
+	// Get asset ID from scan
+	scanID, err := strconv.Atoi(obj.ID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid scan ID")
+	}
+
+	var assetID int
+	query := `SELECT asset_id FROM scans WHERE id = $1`
+	err = r.DB.QueryRow(query, scanID).Scan(&assetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find asset for scan: %w", err)
+	}
+
+	return r.Query().Asset(ctx, strconv.Itoa(assetID))
+}
+
+// Results is the resolver for the results field.
+func (r *scanResolver) Results(ctx context.Context, obj *model.Scan) ([]*model.ScanResult, error) {
+	scanID, err := strconv.Atoi(obj.ID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid scan ID")
+	}
+
+	query := `SELECT id, port, protocol, state, service, version, banner FROM scan_results WHERE scan_id = $1 ORDER BY port`
+	rows, err := r.DB.Query(query, scanID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query scan results: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*model.ScanResult
+	for rows.Next() {
+		var result db.ScanResult
+		err := rows.Scan(&result.ID, &result.Port, &result.Protocol, &result.State, &result.Service, &result.Version, &result.Banner)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan result row: %w", err)
+		}
+
+		results = append(results, &model.ScanResult{
+			ID:       strconv.Itoa(result.ID),
+			Port:     result.Port,
+			Protocol: result.Protocol,
+			State:    result.State,
+			Service:  result.Service,
+			Version:  result.Version,
+			Banner:   result.Banner,
+		})
+	}
+
+	return results, nil
+}
+
+// Mutation returns MutationResolver implementation.
+func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
+
+// Query returns QueryResolver implementation.
+func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
+
+// Asset returns AssetResolver implementation.
+func (r *Resolver) Asset() AssetResolver { return &assetResolver{r} }
+
+// Scan returns ScanResolver implementation.
+func (r *Resolver) Scan() ScanResolver { return &scanResolver{r} }
+
+type mutationResolver struct{ *Resolver }
+type queryResolver struct{ *Resolver }
+type assetResolver struct{ *Resolver }
+type scanResolver struct{ *Resolver }

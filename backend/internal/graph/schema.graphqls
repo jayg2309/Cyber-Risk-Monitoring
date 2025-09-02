@@ -1,0 +1,73 @@
+type User {
+  id: ID!
+  email: String!
+  role: String!
+  createdAt: String!
+}
+
+type Asset {
+  id: ID!
+  name: String!
+  target: String!
+  assetType: String!
+  createdAt: String!
+  lastScannedAt: String
+  scans: [Scan!]!
+}
+
+type Scan {
+  id: ID!
+  asset: Asset!
+  status: String!
+  startedAt: String!
+  completedAt: String
+  errorMessage: String
+  results: [ScanResult!]!
+}
+
+type ScanResult {
+  id: ID!
+  port: Int!
+  protocol: String!
+  state: String!
+  service: String
+  version: String
+  banner: String
+}
+
+type AuthPayload {
+  token: String!
+  user: User!
+}
+
+input RegisterInput {
+  email: String!
+  password: String!
+}
+
+input LoginInput {
+  email: String!
+  password: String!
+}
+
+input CreateAssetInput {
+  name: String!
+  target: String!
+  assetType: String = "server"
+}
+
+type Query {
+  me: User
+  assets: [Asset!]!
+  asset(id: ID!): Asset
+  scans(assetId: ID): [Scan!]!
+  scan(id: ID!): Scan
+}
+
+type Mutation {
+  register(input: RegisterInput!): AuthPayload!
+  login(input: LoginInput!): AuthPayload!
+  createAsset(input: CreateAssetInput!): Asset!
+  deleteAsset(id: ID!): Boolean!
+  startScan(assetId: ID!): Scan!
+}
