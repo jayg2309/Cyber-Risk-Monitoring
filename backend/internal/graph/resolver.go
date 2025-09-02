@@ -8,6 +8,7 @@ import (
 	"cyber-risk-monitor/internal/auth"
 	"cyber-risk-monitor/internal/config"
 	"cyber-risk-monitor/internal/db"
+	"cyber-risk-monitor/internal/graph/generated"
 	"cyber-risk-monitor/internal/scanner"
 )
 
@@ -20,6 +21,9 @@ type Resolver struct {
 	Config      *config.Config
 	ScanManager *scanner.ScanManager
 }
+
+// Ensure Resolver implements generated.ResolverRoot
+var _ generated.ResolverRoot = (*Resolver)(nil)
 
 func NewResolver(database *db.DB, cfg *config.Config) *Resolver {
 	// Create scanner with 5 minute timeout
@@ -41,4 +45,3 @@ func (r *Resolver) getAuthenticatedUser(ctx context.Context) (*auth.Claims, erro
 	}
 	return user, nil
 }
-

@@ -9,6 +9,7 @@ import (
 
 	"cyber-risk-monitor/internal/auth"
 	"cyber-risk-monitor/internal/db"
+	"cyber-risk-monitor/internal/graph/generated"
 	"cyber-risk-monitor/internal/graph/model"
 )
 
@@ -26,7 +27,7 @@ func (r *mutationResolver) Register(ctx context.Context, input model.RegisterInp
 		INSERT INTO users (email, password_hash, role, created_at, updated_at)
 		VALUES ($1, $2, 'user', NOW(), NOW())
 		RETURNING id, email, role, created_at, updated_at`
-	
+
 	err = r.DB.QueryRow(query, input.Email, hashedPassword).Scan(
 		&user.ID, &user.Email, &user.Role, &user.CreatedAt, &user.UpdatedAt,
 	)
@@ -55,7 +56,7 @@ func (r *mutationResolver) Register(ctx context.Context, input model.RegisterInp
 func (r *mutationResolver) Login(ctx context.Context, input model.LoginInput) (*model.AuthPayload, error) {
 	var user db.User
 	query := `SELECT id, email, password_hash, role, created_at FROM users WHERE email = $1`
-	
+
 	err := r.DB.QueryRow(query, input.Email).Scan(
 		&user.ID, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt,
 	)
@@ -100,9 +101,9 @@ func (r *mutationResolver) CreateAsset(ctx context.Context, input model.CreateAs
 		INSERT INTO assets (user_id, name, target, asset_type, created_at)
 		VALUES ($1, $2, $3, $4, NOW())
 		RETURNING id, user_id, name, target, asset_type, created_at, last_scanned_at`
-	
+
 	err = r.DB.QueryRow(query, user.UserID, input.Name, input.Target, input.AssetType).Scan(
-		&asset.ID, &asset.UserID, &asset.Name, &asset.Target, &asset.AssetType, 
+		&asset.ID, &asset.UserID, &asset.Name, &asset.Target, &asset.AssetType,
 		&asset.CreatedAt, &asset.LastScannedAt,
 	)
 	if err != nil {
@@ -411,7 +412,7 @@ func (r *queryResolver) Scan(ctx context.Context, id string) (*model.Scan, error
 		FROM scans s
 		JOIN assets a ON s.asset_id = a.id
 		WHERE s.id = $1`
-	
+
 	err = r.DB.QueryRow(query, scanID).Scan(&userID)
 	if err != nil {
 		return nil, fmt.Errorf("scan not found")
@@ -500,16 +501,16 @@ func (r *scanResolver) Results(ctx context.Context, obj *model.Scan) ([]*model.S
 }
 
 // Mutation returns MutationResolver implementation.
-func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
+func (r *Resolver) Mutation() generated.MutationResolver { return &mutationResolver{r} }
 
 // Query returns QueryResolver implementation.
-func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
+func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }
 
 // Asset returns AssetResolver implementation.
-func (r *Resolver) Asset() AssetResolver { return &assetResolver{r} }
+func (r *Resolver) Asset() generated.AssetResolver { return &assetResolver{r} }
 
 // Scan returns ScanResolver implementation.
-func (r *Resolver) Scan() ScanResolver { return &scanResolver{r} }
+func (r *Resolver) Scan() generated.ScanResolver { return &scanResolver{r} }
 
 type mutationResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }

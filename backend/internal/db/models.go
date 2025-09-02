@@ -24,20 +24,20 @@ type Asset struct {
 }
 
 type Scan struct {
-	ID          int        `json:"id" db:"id"`
-	AssetID     int        `json:"asset_id" db:"asset_id"`
-	Status      string     `json:"status" db:"status"`
-	StartedAt   time.Time  `json:"started_at" db:"started_at"`
-	CompletedAt *time.Time `json:"completed_at" db:"completed_at"`
-	ErrorMessage *string   `json:"error_message" db:"error_message"`
+	ID           int        `json:"id" db:"id"`
+	AssetID      int        `json:"asset_id" db:"asset_id"`
+	Status       string     `json:"status" db:"status"`
+	StartedAt    time.Time  `json:"started_at" db:"started_at"`
+	CompletedAt  *time.Time `json:"completed_at" db:"completed_at"`
+	ErrorMessage *string    `json:"error_message" db:"error_message"`
 }
 
 type ScanResult struct {
-	ID       int    `json:"id" db:"id"`
-	ScanID   int    `json:"scan_id" db:"scan_id"`
-	Port     int    `json:"port" db:"port"`
-	Protocol string `json:"protocol" db:"protocol"`
-	State    string `json:"state" db:"state"`
+	ID       int     `json:"id" db:"id"`
+	ScanID   int     `json:"scan_id" db:"scan_id"`
+	Port     int     `json:"port" db:"port"`
+	Protocol string  `json:"protocol" db:"protocol"`
+	State    string  `json:"state" db:"state"`
 	Service  *string `json:"service" db:"service"`
 	Version  *string `json:"version" db:"version"`
 	Banner   *string `json:"banner" db:"banner"`

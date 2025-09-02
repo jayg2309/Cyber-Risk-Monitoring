@@ -13,10 +13,10 @@ import (
 type ScanStatus string
 
 const (
-	ScanStatusPending    ScanStatus = "pending"
-	ScanStatusRunning    ScanStatus = "running"
-	ScanStatusCompleted  ScanStatus = "completed"
-	ScanStatusFailed     ScanStatus = "failed"
+	ScanStatusPending   ScanStatus = "pending"
+	ScanStatusRunning   ScanStatus = "running"
+	ScanStatusCompleted ScanStatus = "completed"
+	ScanStatusFailed    ScanStatus = "failed"
 )
 
 // Scan represents a scan record
@@ -211,7 +211,7 @@ type Asset struct {
 // getAsset retrieves asset information by ID
 func (sm *ScanManager) getAsset(assetID int) (*Asset, error) {
 	query := `SELECT id, target FROM assets WHERE id = $1`
-	
+
 	var asset Asset
 	err := sm.db.QueryRow(query, assetID).Scan(&asset.ID, &asset.Target)
 	if err != nil {

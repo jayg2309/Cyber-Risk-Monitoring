@@ -14,6 +14,7 @@ import (
 	"cyber-risk-monitor/internal/config"
 	"cyber-risk-monitor/internal/db"
 	"cyber-risk-monitor/internal/graph"
+	"cyber-risk-monitor/internal/graph/generated"
 )
 
 func main() {
@@ -36,7 +37,7 @@ func main() {
 	resolver := graph.NewResolver(database, cfg)
 
 	// Create GraphQL server
-	srv := handler.NewDefaultServer(graph.NewExecutableSchema(graph.Config{
+	srv := handler.NewDefaultServer(generated.NewExecutableSchema(generated.Config{
 		Resolvers: resolver,
 	}))
 
