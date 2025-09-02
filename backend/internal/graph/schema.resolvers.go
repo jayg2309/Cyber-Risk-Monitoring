@@ -174,35 +174,16 @@ func (r *mutationResolver) StartScan(ctx context.Context, assetID string) (*mode
 		return nil, fmt.Errorf("failed to find asset: %w", err)
 	}
 
-	// Create scan record
-	var scan db.Scan
-	insertQuery := `
-		INSERT INTO scans (asset_id, status, started_at)
-		VALUES ($1, 'running', NOW())
-		RETURNING id, asset_id, status, started_at, completed_at, error_message`
-	
-	err = r.DB.QueryRow(insertQuery, assetIDInt).Scan(
-		&scan.ID, &scan.AssetID, &scan.Status, &scan.StartedAt, &scan.CompletedAt, &scan.ErrorMessage,
-	)
+	// Start scan using ScanManager
+	scan, err := r.ScanManager.StartScan(assetIDInt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create scan: %w", err)
-	}
-
-	// TODO: Implement actual scanning logic here
-	// For now, just return the scan record
-
-	var completedAt *string
-	if scan.CompletedAt != nil {
-		formatted := scan.CompletedAt.Format(time.RFC3339)
-		completedAt = &formatted
+		return nil, fmt.Errorf("failed to start scan: %w", err)
 	}
 
 	return &model.Scan{
-		ID:           strconv.Itoa(scan.ID),
-		Status:       scan.Status,
-		StartedAt:    scan.StartedAt.Format(time.RFC3339),
-		CompletedAt:  completedAt,
-		ErrorMessage: scan.ErrorMessage,
+		ID:        strconv.Itoa(scan.ID),
+		Status:    string(scan.Status),
+		StartedAt: scan.CreatedAt.Format(time.RFC3339),
 	}, nil
 }
 
@@ -318,34 +299,64 @@ func (r *queryResolver) Scans(ctx context.Context, assetID *string) ([]*model.Sc
 		return nil, err
 	}
 
-	var query string
-	var args []interface{}
-
 	if assetID != nil {
-		// Verify asset belongs to user
+		// Get scans for specific asset
 		assetIDInt, err := strconv.Atoi(*assetID)
 		if err != nil {
 			return nil, fmt.Errorf("invalid asset ID")
 		}
 
-		query = `
-			SELECT s.id, s.asset_id, s.status, s.started_at, s.completed_at, s.error_message
-			FROM scans s
-			JOIN assets a ON s.asset_id = a.id
-			WHERE s.asset_id = $1 AND a.user_id = $2
-			ORDER BY s.started_at DESC`
-		args = []interface{}{assetIDInt, user.UserID}
-	} else {
-		query = `
-			SELECT s.id, s.asset_id, s.status, s.started_at, s.completed_at, s.error_message
-			FROM scans s
-			JOIN assets a ON s.asset_id = a.id
-			WHERE a.user_id = $1
-			ORDER BY s.started_at DESC`
-		args = []interface{}{user.UserID}
+		// Verify asset belongs to user
+		var userID int
+		query := `SELECT user_id FROM assets WHERE id = $1`
+		err = r.DB.QueryRow(query, assetIDInt).Scan(&userID)
+		if err != nil {
+			return nil, fmt.Errorf("asset not found")
+		}
+		if userID != user.UserID {
+			return nil, fmt.Errorf("unauthorized")
+		}
+
+		// Get scans using ScanManager
+		scans, err := r.ScanManager.GetScansByAsset(assetIDInt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get scans: %w", err)
+		}
+
+		var result []*model.Scan
+		for _, scan := range scans {
+			var completedAt *string
+			if scan.Status == "completed" || scan.Status == "failed" {
+				formatted := scan.UpdatedAt.Format(time.RFC3339)
+				completedAt = &formatted
+			}
+
+			var errorMessage *string
+			if scan.Error != nil {
+				errorMessage = scan.Error
+			}
+
+			result = append(result, &model.Scan{
+				ID:           strconv.Itoa(scan.ID),
+				Status:       string(scan.Status),
+				StartedAt:    scan.CreatedAt.Format(time.RFC3339),
+				CompletedAt:  completedAt,
+				ErrorMessage: errorMessage,
+			})
+		}
+
+		return result, nil
 	}
 
-	rows, err := r.DB.Query(query, args...)
+	// Get all scans for user's assets
+	query := `
+		SELECT s.id, s.asset_id, s.status, s.created_at, s.updated_at, s.error
+		FROM scans s
+		JOIN assets a ON s.asset_id = a.id
+		WHERE a.user_id = $1
+		ORDER BY s.created_at DESC`
+
+	rows, err := r.DB.Query(query, user.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query scans: %w", err)
 	}
@@ -353,24 +364,28 @@ func (r *queryResolver) Scans(ctx context.Context, assetID *string) ([]*model.Sc
 
 	var scans []*model.Scan
 	for rows.Next() {
-		var scan db.Scan
-		err := rows.Scan(&scan.ID, &scan.AssetID, &scan.Status, &scan.StartedAt, &scan.CompletedAt, &scan.ErrorMessage)
+		var scanID, assetID int
+		var status string
+		var createdAt, updatedAt time.Time
+		var errorMsg *string
+
+		err := rows.Scan(&scanID, &assetID, &status, &createdAt, &updatedAt, &errorMsg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
 		var completedAt *string
-		if scan.CompletedAt != nil {
-			formatted := scan.CompletedAt.Format(time.RFC3339)
+		if status == "completed" || status == "failed" {
+			formatted := updatedAt.Format(time.RFC3339)
 			completedAt = &formatted
 		}
 
 		scans = append(scans, &model.Scan{
-			ID:           strconv.Itoa(scan.ID),
-			Status:       scan.Status,
-			StartedAt:    scan.StartedAt.Format(time.RFC3339),
+			ID:           strconv.Itoa(scanID),
+			Status:       status,
+			StartedAt:    createdAt.Format(time.RFC3339),
 			CompletedAt:  completedAt,
-			ErrorMessage: scan.ErrorMessage,
+			ErrorMessage: errorMsg,
 		})
 	}
 
@@ -389,35 +404,45 @@ func (r *queryResolver) Scan(ctx context.Context, id string) (*model.Scan, error
 		return nil, fmt.Errorf("invalid scan ID")
 	}
 
-	var scan db.Scan
+	// Verify scan belongs to user's asset
+	var userID int
 	query := `
-		SELECT s.id, s.asset_id, s.status, s.started_at, s.completed_at, s.error_message
+		SELECT a.user_id 
 		FROM scans s
 		JOIN assets a ON s.asset_id = a.id
-		WHERE s.id = $1 AND a.user_id = $2`
+		WHERE s.id = $1`
 	
-	err = r.DB.QueryRow(query, scanID, user.UserID).Scan(
-		&scan.ID, &scan.AssetID, &scan.Status, &scan.StartedAt, &scan.CompletedAt, &scan.ErrorMessage,
-	)
+	err = r.DB.QueryRow(query, scanID).Scan(&userID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("scan not found")
-		}
-		return nil, fmt.Errorf("failed to find scan: %w", err)
+		return nil, fmt.Errorf("scan not found")
+	}
+	if userID != user.UserID {
+		return nil, fmt.Errorf("unauthorized")
+	}
+
+	// Get scan using ScanManager
+	scan, err := r.ScanManager.GetScan(scanID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get scan: %w", err)
 	}
 
 	var completedAt *string
-	if scan.CompletedAt != nil {
-		formatted := scan.CompletedAt.Format(time.RFC3339)
+	if scan.Status == "completed" || scan.Status == "failed" {
+		formatted := scan.UpdatedAt.Format(time.RFC3339)
 		completedAt = &formatted
+	}
+
+	var errorMessage *string
+	if scan.Error != nil {
+		errorMessage = scan.Error
 	}
 
 	return &model.Scan{
 		ID:           strconv.Itoa(scan.ID),
-		Status:       scan.Status,
-		StartedAt:    scan.StartedAt.Format(time.RFC3339),
+		Status:       string(scan.Status),
+		StartedAt:    scan.CreatedAt.Format(time.RFC3339),
 		CompletedAt:  completedAt,
-		ErrorMessage: scan.ErrorMessage,
+		ErrorMessage: errorMessage,
 	}, nil
 }
 
@@ -452,33 +477,26 @@ func (r *scanResolver) Results(ctx context.Context, obj *model.Scan) ([]*model.S
 		return nil, fmt.Errorf("invalid scan ID")
 	}
 
-	query := `SELECT id, port, protocol, state, service, version, banner FROM scan_results WHERE scan_id = $1 ORDER BY port`
-	rows, err := r.DB.Query(query, scanID)
+	// Get scan results using ScanManager
+	results, err := r.ScanManager.GetScanResults(scanID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query scan results: %w", err)
+		return nil, fmt.Errorf("failed to get scan results: %w", err)
 	}
-	defer rows.Close()
 
-	var results []*model.ScanResult
-	for rows.Next() {
-		var result db.ScanResult
-		err := rows.Scan(&result.ID, &result.Port, &result.Protocol, &result.State, &result.Service, &result.Version, &result.Banner)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan result row: %w", err)
-		}
-
-		results = append(results, &model.ScanResult{
-			ID:       strconv.Itoa(result.ID),
+	var modelResults []*model.ScanResult
+	for _, result := range results {
+		modelResults = append(modelResults, &model.ScanResult{
+			ID:       strconv.Itoa(result.Port), // Using port as ID for now
 			Port:     result.Port,
 			Protocol: result.Protocol,
 			State:    result.State,
-			Service:  result.Service,
-			Version:  result.Version,
-			Banner:   result.Banner,
+			Service:  &result.Service,
+			Version:  &result.Version,
+			Banner:   &result.Banner,
 		})
 	}
 
-	return results, nil
+	return modelResults, nil
 }
 
 // Mutation returns MutationResolver implementation.

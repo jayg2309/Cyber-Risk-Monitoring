@@ -3,10 +3,12 @@ package graph
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"cyber-risk-monitor/internal/auth"
 	"cyber-risk-monitor/internal/config"
 	"cyber-risk-monitor/internal/db"
+	"cyber-risk-monitor/internal/scanner"
 )
 
 // This file will not be regenerated automatically.
@@ -14,14 +16,20 @@ import (
 // It serves as dependency injection for your app, add any dependencies you require here.
 
 type Resolver struct {
-	DB     *db.DB
-	Config *config.Config
+	DB          *db.DB
+	Config      *config.Config
+	ScanManager *scanner.ScanManager
 }
 
 func NewResolver(database *db.DB, cfg *config.Config) *Resolver {
+	// Create scanner with 5 minute timeout
+	nmapScanner := scanner.NewScanner(5 * time.Minute)
+	scanManager := scanner.NewScanManager(database, nmapScanner)
+
 	return &Resolver{
-		DB:     database,
-		Config: cfg,
+		DB:          database,
+		Config:      cfg,
+		ScanManager: scanManager,
 	}
 }
 
