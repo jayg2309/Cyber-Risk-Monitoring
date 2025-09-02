@@ -180,6 +180,12 @@ export const START_SCAN_MUTATION = `
   }
 `;
 
+export const EXPORT_SCANS_MUTATION = `
+  mutation ExportScans($assetId: ID) {
+    exportScans(assetId: $assetId)
+  }
+`;
+
 // GraphQL Error Handler
 export const handleGraphQLError = (error: any): string => {
   if (error.response?.data?.errors) {

@@ -70,4 +70,5 @@ type Mutation {
   createAsset(input: CreateAssetInput!): Asset!
   deleteAsset(id: ID!): Boolean!
   startScan(assetId: ID!): Scan!
+  exportScans(assetId: ID): String!
 }

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Plus, Trash2, Play, Clock, CheckCircle, AlertCircle } from 'lucide-react';
-import { Asset } from '../types';
+import { Trash2, Play, Clock, CheckCircle, AlertCircle, Plus } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/Card';
+import { ExportButton } from './ExportButton';
+import { Asset } from '../types';
 
 interface AssetListProps {
   assets: Asset[];
@@ -113,7 +114,9 @@ export const AssetList: React.FC<AssetListProps> = ({
                   <th className="text-left py-3 px-4 font-medium text-gray-900">Type</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-900">Last Scan</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-900">Status</th>
-                  <th className="text-right py-3 px-4 font-medium text-gray-900">Actions</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -141,6 +144,10 @@ export const AssetList: React.FC<AssetListProps> = ({
                       </td>
                       <td className="py-3 px-4">
                         <div className="flex items-center justify-end space-x-2">
+                          <ExportButton 
+                            assetId={asset.id} 
+                            assetName={asset.name}
+                          />
                           <Button
                             size="sm"
                             onClick={() => handleStartScan(asset.id)}

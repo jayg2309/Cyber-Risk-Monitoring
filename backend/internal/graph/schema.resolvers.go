@@ -9,8 +9,9 @@ import (
 
 	"cyber-risk-monitor/internal/auth"
 	"cyber-risk-monitor/internal/db"
-	"cyber-risk-monitor/internal/graph/generated"
+	"cyber-risk-monitor/internal/export"
 	"cyber-risk-monitor/internal/graph/model"
+	"cyber-risk-monitor/internal/graph/generated"
 )
 
 // Register is the resolver for the register field.
@@ -498,6 +499,28 @@ func (r *scanResolver) Results(ctx context.Context, obj *model.Scan) ([]*model.S
 	}
 
 	return modelResults, nil
+}
+
+// ExportScans is the resolver for the exportScans field.
+func (r *mutationResolver) ExportScans(ctx context.Context, assetID *string) (string, error) {
+	// Get authenticated user
+	user, err := r.getAuthenticatedUser(ctx)
+	if err != nil {
+		return "", err
+	}
+	_ = user // User is authenticated, proceed
+
+	// Create CSV exporter
+	csvExporter := export.NewCSVExporter(r.DB)
+
+	// Export scans based on assetID parameter
+	if assetID != nil {
+		// Export scans for specific asset
+		return csvExporter.ExportScanResults(*assetID)
+	}
+
+	// Export all scans
+	return csvExporter.ExportAllScans()
 }
 
 // Mutation returns MutationResolver implementation.
